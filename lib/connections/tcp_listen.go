@@ -81,6 +81,7 @@ func (t *tcpListener) serve(ctx context.Context) error {
 	mapping.OnChanged(func() {
 		t.notifyAddressesChanged(t)
 	})
+
 	// Should be called after t.mapping is nil'ed out.
 	defer t.natService.RemoveMapping(mapping)
 

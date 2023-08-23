@@ -249,7 +249,7 @@ func (s *Service) verifyExistingLocked(ctx context.Context, mapping *Mapping, na
 
 			l.Debugf("Renewing %s -> %s mapping on %s", mapping, address, id)
 
-			addrs, err := s.tryNATDevice(ctx, nat, mapping.address.Port, address.Port, leaseTime)
+			addrs, err := s.tryNATDevice(ctx, nat, mapping.address.Port, address.Port, leaseTime, mapping.Protocol())
 			if err != nil {
 				l.Debugf("Failed to renew %s -> mapping on %s", mapping, address, id)
 				mapping.removeAddressLocked(id)
@@ -297,7 +297,7 @@ func (s *Service) acquireNewLocked(ctx context.Context, mapping *Mapping, nats m
 
 		l.Debugf("Acquiring %s mapping on %s", mapping, id)
 
-		addrs, err := s.tryNATDevice(ctx, nat, mapping.address.Port, 0, leaseTime)
+		addrs, err := s.tryNATDevice(ctx, nat, mapping.address.Port, 0, leaseTime, mapping.Protocol())
 		if err != nil {
 			l.Debugf("Failed to acquire %s mapping on %s", mapping, id)
 			continue
@@ -315,14 +315,14 @@ func (s *Service) acquireNewLocked(ctx context.Context, mapping *Mapping, nats m
 
 // tryNATDevice tries to acquire a port mapping for the given internal address to
 // the given external port. If external port is 0, picks a pseudo-random port.
-func (s *Service) tryNATDevice(ctx context.Context, natd Device, intPort, extPort int, leaseTime time.Duration) ([]Address, error) {
+func (s *Service) tryNATDevice(ctx context.Context, natd Device, intPort, extPort int, leaseTime time.Duration, proto Protocol) ([]Address, error) {
 	var err error
 	var port int
 	// For IPv6, we just try to create the pinhole. If it fails, nothing can be done (probably no IGDv2 support).
 	// If it already exists, the relevant UPnP standard requires that the gateway recognizes this and updates the lease time.
 	// Since we usually have a global unicast IPv6 address so no conflicting mappings, we just request the port we're running on
 	if natd.IsIPv6GatewayDevice() {
-		ipaddrs, err := natd.AddPinhole(ctx, TCP, intPort, leaseTime)
+		ipaddrs, err := natd.AddPinhole(ctx, proto, intPort, leaseTime)
 		addrs := []Address{}
 		for _, ipaddr := range ipaddrs {
 			addrs = append(addrs, Address{
@@ -345,7 +345,7 @@ func (s *Service) tryNATDevice(ctx context.Context, natd Device, intPort, extPor
 	if extPort != 0 {
 		// First try renewing our existing mapping, if we have one.
 		name := fmt.Sprintf("syncthing-%d", extPort)
-		port, err = natd.AddPortMapping(ctx, TCP, intPort, extPort, name, leaseTime)
+		port, err = natd.AddPortMapping(ctx, proto, intPort, extPort, name, leaseTime)
 		if err == nil {
 			extPort = port
 			goto findIP

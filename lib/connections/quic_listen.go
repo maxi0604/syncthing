@@ -47,6 +47,8 @@ type quicListener struct {
 	factory    listenerFactory
 	registry   *registry.Registry
 	lanChecker *lanChecker
+	natService *nat.Service
+	mapping    *nat.Mapping
 
 	address *url.URL
 	laddr   net.Addr
@@ -121,6 +123,25 @@ func (t *quicListener) serve(ctx context.Context) error {
 	defer t.clearAddresses(t)
 
 	l.Infof("QUIC listener (%v) starting", udpConn.LocalAddr())
+
+	mapping := t.natService.NewMapping(nat.TCP, udpAddr.IP, udpAddr.Port)
+	mapping.OnChanged(func() {
+		t.notifyAddressesChanged(t)
+	})
+
+	// Should be called after t.mapping is nil'ed out.
+	defer t.natService.RemoveMapping(mapping)
+
+	t.mut.Lock()
+	t.mapping = mapping
+	t.laddr = udpAddr
+	t.mut.Unlock()
+	defer func() {
+		t.mut.Lock()
+		t.mapping = nil
+		t.laddr = nil
+		t.mut.Unlock()
+	}()
 	defer l.Infof("QUIC listener (%v) shutting down", udpConn.LocalAddr())
 
 	t.mut.Lock()
@@ -189,11 +210,29 @@ func (t *quicListener) URI() *url.URL {
 
 func (t *quicListener) WANAddresses() []*url.URL {
 	t.mut.Lock()
-	uris := []*url.URL{maybeReplacePort(t.uri, t.laddr)}
-	if t.address != nil {
-		uris = append(uris, t.address)
+	uris := []*url.URL{
+		maybeReplacePort(t.uri, t.laddr),
+	}
+	if t.mapping != nil {
+		addrs := t.mapping.ExternalAddresses()
+		for _, addr := range addrs {
+			uri := *t.uri
+			// Does net.JoinHostPort internally
+			uri.Host = addr.String()
+			uris = append(uris, &uri)
+
+			// For every address with a specified IP, add one without an IP,
+			// just in case the specified IP is still internal (router behind DMZ).
+			if len(addr.IP) != 0 && !addr.IP.IsUnspecified() {
+				uri = *t.uri
+				addr.IP = nil
+				uri.Host = addr.String()
+				uris = append(uris, &uri)
+			}
+		}
 	}
 	t.mut.Unlock()
+
 	return uris
 }
 
@@ -229,12 +268,13 @@ func (*quicListenerFactory) Valid(config.Configuration) error {
 	return nil
 }
 
-func (f *quicListenerFactory) New(uri *url.URL, cfg config.Wrapper, tlsCfg *tls.Config, conns chan internalConn, _ *nat.Service, registry *registry.Registry, lanChecker *lanChecker) genericListener {
+func (f *quicListenerFactory) New(uri *url.URL, cfg config.Wrapper, tlsCfg *tls.Config, conns chan internalConn, natSvc *nat.Service, registry *registry.Registry, lanChecker *lanChecker) genericListener {
 	l := &quicListener{
 		uri:        fixupPort(uri, config.DefaultQUICPort),
 		cfg:        cfg,
 		tlsCfg:     tlsCfg,
 		conns:      conns,
+		natService: natSvc,
 		factory:    f,
 		registry:   registry,
 		lanChecker: lanChecker,
